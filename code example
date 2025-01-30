@@ -1,0 +1,138 @@
+package com.whirlpoolcorp.digitalplatform.aem.core.job;
+
+import static org.junit.Assert.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+import java.time.LocalDate;
+import java.util.*;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.sling.api.resource.*;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.*;
+import org.mockito.junit.MockitoJUnitRunner;
+import org.osgi.service.component.annotations.Activate;
+
+import com.whirlpoolcorp.digitalplatform.aem.core.constants.EMEAConstants;
+import com.whirlpoolcorp.digitalplatform.aem.core.constants.WCMConstants;
+import com.whirlpoolcorp.digitalplatform.aem.core.services.EmeaCsvGenerationService;
+import com.whirlpoolcorp.digitalplatform.aem.core.utils.ResourceResolverUtils;
+
+@RunWith(MockitoJUnitRunner.class)
+public class EmeaPimCsvGenerationJobTest {
+
+    @InjectMocks
+    private EmeaPimCsvGenerationJob emeaPimCsvGenerationJob;
+
+    @Mock
+    private EmeaPimCsvGenerationJob.Config config;
+
+    @Mock
+    private EmeaCsvGenerationService emeaCsvGenerationService;
+
+    @Mock
+    private ResourceResolverFactory resourceResolverFactory;
+
+    @Mock
+    private ResourceResolver resourceResolver;
+
+    @Mock
+    private Resource rootResource;
+
+    @Mock
+    private Resource folderResource1;
+
+    @Mock
+    private Resource folderResource2;
+
+    @Mock
+    private Iterable<Resource> children;
+
+    @Before
+    public void setUp() {
+        MockitoAnnotations.openMocks(this);
+
+        // Mock ResourceResolverUtils to return a mock ResourceResolver
+        when(ResourceResolverUtils.initServiceResourceResolver(eq(resourceResolverFactory), eq(WCMConstants.ASSET_ADMIN)))
+                .thenReturn(resourceResolver);
+
+        when(config.disabled()).thenReturn(false);
+        when(config.languages_generic_list_path()).thenReturn("/content/dam/languages");
+        when(config.asset_url_mapping()).thenReturn("mapping1*value1|mapping2*value2");
+        when(config.denied_paths()).thenReturn(new String[]{"/content/dam/emea/excluded"});
+        when(config.number_of_days_purge()).thenReturn(30);
+
+        emeaPimCsvGenerationJob.activate(config);
+    }
+
+    @Test
+    public void testRun() {
+        emeaPimCsvGenerationJob.run();
+        verify(emeaCsvGenerationService, times(1)).createEmeaPimCsv(eq(resourceResolver), eq("/content/dam/languages"), any(), anyMap());
+    }
+
+    @Test
+    public void testRunWhenDisabled() {
+        when(config.disabled()).thenReturn(true);
+        emeaPimCsvGenerationJob.activate(config);
+        emeaPimCsvGenerationJob.run();
+        verify(emeaCsvGenerationService, never()).createEmeaPimCsv(any(), anyString(), any(), anyMap());
+    }
+
+    @Test
+    public void testActivateWithNullConfig() {
+        emeaPimCsvGenerationJob.activate(null);
+        assertTrue(emeaPimCsvGenerationJob.disabled);
+    }
+
+    @Test
+    public void testGetAssetUrlMapper() {
+        Map<String, String> assetUrlMapper = emeaPimCsvGenerationJob.getAssetUrlMapper();
+        assertNotNull(assetUrlMapper);
+        assertEquals(2, assetUrlMapper.size());
+        assertEquals("value1", assetUrlMapper.get("mapping1"));
+        assertEquals("value2", assetUrlMapper.get("mapping2"));
+    }
+
+    @Test
+    public void testCleanUpOldFolders() throws PersistenceException {
+        LocalDate cutoffDate = LocalDate.now().minusDays(30);
+        
+        when(resourceResolver.getResource("/content/dam/emea/pim")).thenReturn(rootResource);
+        when(rootResource.getChildren()).thenReturn(Arrays.asList(folderResource1, folderResource2));
+
+        when(folderResource1.getResourceType()).thenReturn("folder");
+        when(folderResource1.getName()).thenReturn(cutoffDate.minusDays(1).toString()); // Should be deleted
+        when(folderResource1.getPath()).thenReturn("/content/dam/emea/pim/oldFolder1");
+
+        when(folderResource2.getResourceType()).thenReturn("folder");
+        when(folderResource2.getName()).thenReturn(cutoffDate.plusDays(1).toString()); // Should not be deleted
+        when(folderResource2.getPath()).thenReturn("/content/dam/emea/pim/newFolder2");
+
+        emeaPimCsvGenerationJob.cleanUpOldFolders(resourceResolver);
+
+        verify(resourceResolver, times(1)).delete(folderResource1);
+        verify(resourceResolver, never()).delete(folderResource2);
+    }
+
+    @Test
+    public void testCleanUpOldFoldersHandlesException() throws PersistenceException {
+        LocalDate cutoffDate = LocalDate.now().minusDays(30);
+
+        when(resourceResolver.getResource("/content/dam/emea/pim")).thenReturn(rootResource);
+        when(rootResource.getChildren()).thenReturn(Arrays.asList(folderResource1));
+
+        when(folderResource1.getResourceType()).thenReturn("folder");
+        when(folderResource1.getName()).thenReturn(cutoffDate.minusDays(1).toString()); // Should be deleted
+        when(folderResource1.getPath()).thenReturn("/content/dam/emea/pim/oldFolder");
+
+        doThrow(new PersistenceException("Test exception")).when(resourceResolver).delete(folderResource1);
+
+        emeaPimCsvGenerationJob.cleanUpOldFolders(resourceResolver);
+
+        verify(resourceResolver, times(1)).delete(folderResource1);
+    }
+}
